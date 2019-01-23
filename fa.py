@@ -1,11 +1,11 @@
 import torch
+
 from torch import nn
 from torch.autograd import Function
+
 import torch.nn.functional as F
 import numpy as np
 import torch.optim as optim
-from torch.utils.data import TensorDataset, DataLoader
-from torchvision import datasets, transforms
 
 # Inherit from Function
 class FALinearFunction(Function):
@@ -81,56 +81,5 @@ class FALinear(nn.Module):
         # (Optional)Set the extra information about this module. You can test
         # it by printing an object of this class.
         return 'in_features={}, out_features={}, bias={}'.format(
-            self.in_features, self.out_features, self.bias is not None
+            self.input_features, self.output_features, self.bias is not None
         )
-
-class MLP(nn.Module):
-    def __init__(self, sizes, func=nn.Linear):
-        super().__init__()
-        self.layers = nn.ModuleList()
-        for n1, n2 in zip(sizes[:-1], sizes[1:]):
-            self.layers.append(func(n1, n2))
-    
-    def forward(self, x):
-        x = x.flatten(start_dim=1)
-        for l in self.layers[:-1]:
-            x = torch.tanh(l(x))
-        return self.layers[-1](x)
-
-def toT(x):
-    return torch.tensor(x, dtype=torch.float32, requires_grad=False)
-
-def fromT(x):
-    return x.detach().numpy()
-
-
-def train_mnist_epoch(net, optimizer, dataset, epoch):
-    for batch_idx, (data, target) in enumerate(dataset):
-        # data, target = data.to(device), target.to(device)
-        optimizer.zero_grad()
-        output = net(data)
-        output = F.log_softmax(output, dim=1)
-        loss = F.nll_loss(output, target)
-        loss.backward()
-        optimizer.step()
-
-        log_interval = 10
-        if batch_idx % log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(dataset.dataset),
-                100. * batch_idx / len(dataset), loss.item()))
-
-def train_mnist(net, epochs=50, batch_size=64):
-    net.train()
-    optimizer = optim.Adam(net.parameters())
-
-    train_loader = torch.utils.data.DataLoader(
-        datasets.MNIST('../data', train=True, download=True,
-                       transform=transforms.Compose([
-                           transforms.ToTensor(),
-                           transforms.Normalize((0.1307,), (0.3081,))
-                       ])),
-        batch_size=batch_size, shuffle=True)
-    
-    for epoch in range(1, epochs + 1):
-        train_mnist_epoch(net, optimizer, train_loader, epoch)
