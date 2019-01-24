@@ -3,19 +3,43 @@ import torch
 from torch import nn
 
 import matplotlib.pyplot as plt
-import numpy
 
 import torch.optim as optim
-import time
 
-def train_net(net, data, epochs=50, sample_every=5, print_loss=False, live_plot=False, regression=True, updates=1, optimizer='SGD', lr=0.01):
+import math
+
+
+def to_trigger(spec):
+    if isinstance(spec, tuple):
+        interval = spec[0]
+        func = spec[1]
+    else:
+        interval = 'batch'
+        func = spec
+
+    if isinstance(interval, int):
+        trigger = lambda b, e: b % interval == 0
+    elif isinstance(interval, list):
+        trigger = lambda b, e: b in interval
+    elif interval == 'batch':
+        trigger = lambda b, e: True
+    elif interval == 'epoch':
+        trigger = lambda b, e: e == round(e)
+    else:
+        raise Exception('bad callback trigger') 
+
+    return lambda n, b, e: (func({'net':n, 'batch':b, 'epoch':e}) if trigger(b, e) else None)
+
+def train_net(net, data, epochs=50, sample_every=5, print_loss=False, live_plot=False, regression=True, updates=1, optimizer='SGD', lr=0.01, callbacks=[]):
     criterion = nn.MSELoss() if regression else nn.CrossEntropyLoss()
     
     if isinstance(optimizer, str):
         optclass = getattr(optim, optimizer)
         optfactory = lambda params: optclass(params, lr=lr)
     elif isinstance(optimizer, dict):
-        optclass = getattr(optim, optimizer.pop('type'))
+        optimizer = optimizer.copy()
+        opttype = optimizer.pop("type")
+        optclass = getattr(optim, opttype)
         optfactory = lambda params: optclass(params, lr=lr, **optimizer)
     else:
         raise Exception('bad optimizer')
@@ -30,23 +54,38 @@ def train_net(net, data, epochs=50, sample_every=5, print_loss=False, live_plot=
 
     tick = 1
     running_loss = 0.0
-    for epoch in range(epochs):
+
+    triggers = [to_trigger(s) for s in callbacks]
+
+    n_epochs = math.ceil(epochs)
+    batches_per_epoch = len(data)
+
+    batch_index = 0
+    max_batch_index = math.ceil(batches_per_epoch * epochs)
+
+    for epoch in range(n_epochs):
         for batch in data:
+            batch_index += 1
+            if batch_index == max_batch_index:
+                break
+
+            for trigger in triggers: 
+                trigger(net, batch_index, epoch)
+
             inputs, targets = batch
 
-            # zero the parameter gradients
-            optimizer.zero_grad()
-
-            # forward + backward + optimize
+            batch_loss = None
             for u in range(updates):
+                net.zero_grad()
                 outputs = net(inputs)
                 loss = criterion(outputs, targets)
+                if batch_loss == None:
+                    batch_loss = loss.item()
                 loss.backward()
 
             optimizer.step()
 
-            # print statistics
-            running_loss += loss.item()
+            running_loss += batch_loss
             tick += 1
             if tick % sample_every == 1:
                 running_loss /= sample_every

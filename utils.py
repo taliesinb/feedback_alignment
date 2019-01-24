@@ -1,5 +1,9 @@
 import torch
 
+# for defining EchoFunction
+from torch.autograd import Function
+import torch.nn.functional as F
+
 from torch.utils.data import TensorDataset, DataLoader
 from torchvision import datasets, transforms
 from torch import nn
@@ -8,7 +12,8 @@ class flatten(nn.Module):
     def forward(self, input):
         return input.view(input.size(0), -1)
 
-def MLP(*args, linearity=nn.Linear, nonlinearity=nn.Tanh):
+def MLP(*args, linearity=nn.Linear, nonlinearity=nn.Tanh, seed=1):
+	torch.manual_seed(seed)
 	last = args[0]
 	assert(isinstance(last, int))
 	layers = []
@@ -43,3 +48,21 @@ def mnist_data(batch_size=64, is_train=True):
 	])
 	data = datasets.MNIST('../data', train=is_train, download=True, transform=ts)
 	return torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=True)
+
+class EchoGradientFunction(Function):
+
+    @staticmethod
+    def forward(ctx, input):
+        return input
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        print("norm of", list(grad_output.shape), "is", torch.norm(grad_output, p=2).item())
+        return grad_output
+
+class EchoGradient(nn.Module):
+    def __init__(self):
+        super(EchoGradient, self).__init__()
+
+    def forward(self, input):
+        return EchoGradientFunction.apply(input)

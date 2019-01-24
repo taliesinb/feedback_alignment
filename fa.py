@@ -1,85 +1,89 @@
 import torch
 
 from torch import nn
+from torch.nn import init
 from torch.autograd import Function
 
+import math
 import torch.nn.functional as F
 import numpy as np
-import torch.optim as optim
 
 # Inherit from Function
 class FALinearFunction(Function):
 
-    # Note that both forward and backward are @staticmethods
     @staticmethod
-    # bias is an optional argument
-    def forward(ctx, input, weight, b_matrix, bias=None):
-        ctx.save_for_backward(input, weight, b_matrix, bias)
+    def forward(ctx, input, weight, bias, b_matrix):
+        ctx.save_for_backward(input, weight, bias, b_matrix)
         output = input.mm(weight.t())
         if bias is not None:
             output += bias.unsqueeze(0).expand_as(output)
         return output
 
-    # This function has only a single output, so it gets only one gradient
     @staticmethod
     def backward(ctx, grad_output):
-        # This is a pattern that is very convenient - at the top of backward
-        # unpack saved_tensors and initialize all gradients w.r.t. inputs to
-        # None. Thanks to the fact that additional trailing Nones are
-        # ignored, the return statement is simple even when the function has
-        # optional inputs.
-        input, weight, b_matrix, bias = ctx.saved_tensors
+
+        input, weight, bias, b_matrix = ctx.saved_tensors
         grad_input = grad_weight = grad_bias = None
 
-        # These needs_input_grad checks are optional and there only to
-        # improve efficiency. If you want to make your code simpler, you can
-        # skip them. Returning gradients for inputs that don't require it is
-        # not an error.
         if ctx.needs_input_grad[0]:
             grad_input = grad_output.mm(b_matrix)
         if ctx.needs_input_grad[1]:
             grad_weight = grad_output.t().mm(input)
         if bias is not None and ctx.needs_input_grad[2]:
-            grad_bias = grad_output.sum(0).squeeze(0)
+            grad_bias = grad_output.sum(0)
 
-        return grad_input, grad_weight, None, grad_bias
+        return grad_input, grad_weight, grad_bias, None
 
 class FALinear(nn.Module):
-    def __init__(self, input_features, output_features, bias=True):
-        super(FALinear, self).__init__()
-        self.input_features = input_features
-        self.output_features = output_features
+    def __init__(self, in_features, out_features, bias=True):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
 
-        # nn.Parameter is a special kind of Tensor, that will get
-        # automatically registered as Module's parameter once it's assigned
-        # as an attribute. Parameters and buffers need to be registered, or
-        # they won't appear in .parameters() (doesn't apply to buffers), and
-        # won't be converted when e.g. .cuda() is called. You can use
-        # .register_buffer() to register buffers.
-        # nn.Parameters require gradients by default.
-        self.weight = nn.Parameter(torch.Tensor(output_features, input_features))
-        self.register_buffer('b_matrix', torch.randn(output_features, input_features))
+        self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
+
+        b_matrix = torch.zeros(out_features, in_features)
+        init.xavier_normal_(b_matrix)
+        self.register_buffer('b_matrix', b_matrix)
+
         if bias:
-            self.bias = nn.Parameter(torch.Tensor(output_features))
+            self.bias = nn.Parameter(torch.Tensor(out_features))
         else:
-            # You should always register all possible parameters, but the
-            # optional ones can be None if you want.
             self.register_parameter('bias', None)
-
-        # Not a very smart way to initialize weights
-        stddev = np.sqrt(2 / (input_features + output_features))
-        uniform_range = stddev * np.sqrt(3.)
-        self.weight.data.uniform_(-uniform_range, uniform_range)
-        if bias is not None:
-            self.bias.data.uniform_(0, 0)
+        self.reset_parameters()
 
     def forward(self, input):
-        # See the autograd section for explanation of what happens here.
-        return FALinearFunction.apply(input, self.weight, self.b_matrix, self.bias)
+        return FALinearFunction.apply(input, self.weight, self.bias, self.b_matrix)
+
+    def update_b_matrix(self):
+        self.b_matrix.copy_(torch.sign(self.weight))
+
+    def reset_parameters(self):
+        init.xavier_normal_(self.weight)
+        if self.bias is not None:
+            init.uniform_(self.bias, 0, 0)
+            #fan_in, _ = init._calculate_fan_in_and_fan_out(self.weight)
+            #bound = 1 / math.sqrt(fan_in)
+            #init.uniform_(self.bias, -bound, bound)
 
     def extra_repr(self):
-        # (Optional)Set the extra information about this module. You can test
-        # it by printing an object of this class.
         return 'in_features={}, out_features={}, bias={}'.format(
-            self.input_features, self.output_features, self.bias is not None
+            self.in_features, self.out_features, self.bias is not None
         )
+
+class BPLinear(nn.Linear):
+    def __init__(self, *args, **kw_args):
+        super().__init__(*args, **kw_args)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        if self.bias is not None:
+            fan_in, _ = init._calculate_fan_in_and_fan_out(self.weight)
+            bound = 1 / math.sqrt(fan_in)
+            init.uniform_(self.bias, -bound, bound)
+
+def update_mlp_bmatrix(net):
+    for layer in net:
+        if isinstance(layer, FALinear):
+            layer.update_b_matrix()
